@@ -2,6 +2,7 @@ import os
 import math
 import json
 import requests
+from datetime import datetime
 from IPython.display import clear_output
 
 class bcolors:
@@ -345,6 +346,7 @@ class MTGDeckBuilder:
         return cardsNeededForMainboard, cardsNeededForSideboard
     
     def buildAndSaveDeck(self, decklist, cardList = {}, decks = {}):
+        TransferLog = ''
         sideboardExists = True
         if(isinstance(decklist, dict)):
             mainboard = decklist
@@ -404,18 +406,27 @@ class MTGDeckBuilder:
                 return False
         #Building the mainboard
         for card in mainboard:
-            self.__pullCardFromOtherDecks(card, mainboard, cardList, decks)
+            cont = True
+            TransferLog, cont = self.__pullCardFromOtherDecks(card, mainboard, cardList, decks, TransferLog, cont)
+            if(cont == False):
+                print('No worries, you can always build it in the future.')
+                return False
         #Building the sideboard
         for card in sideboard:
-            self.__pullCardFromOtherDecks(card, sideboard, cardList, decks)
+            cont = True
+            TransferLog, cont = self.__pullCardFromOtherDecks(card, sideboard, cardList, decks, TransferLog, cont)
+            if(cont == False):
+                print('No worries, you can always build it in the future.')
+                return False
         input('Building complete, press Enter to continue.')
         clear_output(wait = False)
         deckNameForSave = input('Please choose a deck name to save the deck as a text file (do not add .txt): ')
         self.writeDeckToTextFile(decklist, deckNameForSave + '.txt')
         self.__addDeckListToMyDecks(deckNameForSave)
+        self.__saveTransferLog(TransferLog, deckNameForSave)
         return True
     
-    def __pullCardFromOtherDecks(self, card, mainboard, cardList, decks):
+    def __pullCardFromOtherDecks(self, card, mainboard, cardList, decks, log, cont):
         clear_output(wait = False)
         currentLocations = self.checkForCardInCurrentDecks(card, decks)
         if card in cardList:
@@ -449,8 +460,8 @@ class MTGDeckBuilder:
                 print(options)
             else:
                 clear_output(wait = False)
-                print('No worries, you can always build it in the future.')
-                return False
+                cont = False
+                break
             choice = input('Choose a number or type [other] if you own additional copies of the card not currently reflected in you card list: ')
             if(choice.lower() == 'other' or choice.lower() == '[other]'):
                 quantNeededFromDecks = 0
@@ -459,9 +470,9 @@ class MTGDeckBuilder:
                 deckChoice = listOfDecks[int(choice) - 1]
                 quantInDeck = currentLocations[deckChoice]
                 if(quantInDeck[0] == 0):
-                    self.__pullFromMainOrSide('side')
+                    quantNeededFromDecks, currentLocations, log = self.__pullFromMainOrSide('side', deckChoice, decks, card, quantInDeck, quantNeededFromDecks, log)
                 elif(quantInDeck[1] == 0):
-                    self.__pullFromMainOrSide('main')
+                    quantNeededFromDecks, currentLocations, log = self.__pullFromMainOrSide('main', deckChoice, decks, card, quantInDeck, quantNeededFromDecks, log)
                 else:
                     print('You can pull {} {} from the mainboard and {} {} from the sideboard'.format(quantInDeck[0], copyOrCopies(quantInDeck[0]), quantInDeck[1], copyOrCopies(quantInDeck[1])))
                     mainOrSide = input('Would you like to pull from the mainboard [m] or the sideboard [s]? ')
@@ -470,14 +481,15 @@ class MTGDeckBuilder:
                         pullMain = True
                     if(pullMain):
                         print('Pulling from mainboard...')
-                        self.__pullFromMainOrSide('main')
+                        quantNeededFromDecks, currentLocations = self.__pullFromMainOrSide('main', deckChoice, decks, card, quantInDeck, quantNeededFromDecks)
                     else:
                         print('Pulling from sideboard...')
-                        self.__pullFromMainOrSide('side')
+                        quantNeededFromDecks, currentLocations = self.__pullFromMainOrSide('side', deckChoice, decks, card, quantInDeck, quantNeededFromDecks)
             else:
                 print('That was not a valid choice, please try again.')
+        return log, cont
                 
-    def __pullFromMainOrSide(self, mainOrSide):
+    def __pullFromMainOrSide(self, mainOrSide, deckChoice, decks, card, quantInDeck, quantNeededFromDecks, log):
         if(mainOrSide == 'main'):
             number = 0
         else:
@@ -485,12 +497,13 @@ class MTGDeckBuilder:
         pullFrom = int(input('How many copies would you like to pull from the {}board of {}? (Max: {})'.format(mainOrSide, deckChoice, quantInDeck[number])))
         while(pullFrom > quantInDeck[number]):
             print("You don't have enough copies to pull that many. Please try again.")
-            pullFromSide = int(input('How many copies would you like to pull from the {}board of {}? (Max: {})'.format(mainOrSide, deckChoice, quantInDeck[number])))
+            pullFrom = int(input('How many copies would you like to pull from the {}board of {}? (Max: {})'.format(mainOrSide, deckChoice, quantInDeck[number])))
         quantNeededFromDecks -= pullFrom
         if(pullFrom == quantInDeck[number]):
             del decks[deckChoice][number][card]
         else:
             decks[deckChoice][number][card] -= pullFrom
+        log = self.__addTransferToLog(pullFrom, card, deckChoice, log)
         update = input('Update decklist text file [Y/n]? ')
         if(update.lower()== 'y' or update.lower()== 'yes'):
             chooseName = input('Choose file name (default = {}.txt) [y/n]? '.format(deckChoice))
@@ -515,7 +528,31 @@ class MTGDeckBuilder:
                 clear_output(wait = False)
                 print(' --- OK... ---')
         currentLocations = self.checkForCardInCurrentDecks(card, decks)
+        return quantNeededFromDecks, currentLocations, log
         
+    def __addTransferToLog(self, quantity, cardName, deckFrom, transfers):
+        now = datetime.now()
+        dt_string = now.strftime("%B %d, %Y" + ', ' + "%H:%M:%S")
+        transfers += dt_string + ' : Transferred {} {} of {} from {} to __deckNameHere__.\n'.format(quantity, copyOrCopies(quantity), cardName, deckFrom)
+        return transfers
+    
+    def __saveTransferLog(self, log, deckName):
+        transfers = ''
+        try:
+            with open('transferLog.txt') as fp:
+                transferLog = fp.readlines()
+            for transfer in transferLog:
+                transfers += transfer
+            if(transfers[-1:] != '\n'):
+                transfers += '\n'
+        except:
+            print('No existing log, creating a new one. Saving the log to: transferLog.txt')
+        transfers += log
+        transfers = transfers.replace('__deckNameHere__', deckName)
+        with open('transferLog.txt', 'w') as fd:
+            fd.write(transfers)
+        input('Saved to log. Press Enter to continue')
+    
     def __addDeckListToMyDecks(self, deckNameForSave):
         save = input('Would you like to add this deck to your list of decks [Y/n]? ')
         if(save.lower() == 'y' or save.lower() == 'yes'):
